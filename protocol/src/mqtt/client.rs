@@ -15,7 +15,7 @@ use super::{
     },
     types::Packet,
 };
-use crate::mqtt::packet::connack::ConnackReturnCode;
+use crate::mqtt::packet::{connack::ConnackReturnCode, pubrel::Pubrel};
 use tokio::net::TcpStream;
 pub struct Client {
     frame: Framed<TcpStream, MqttCodec>,
@@ -184,8 +184,14 @@ impl Client {
                 Packet::Unsuback(_unsuback) => {
                     println!("Get Unsuback from broker");
                 }
-                Packet::Pubrec(_pubrec) => {
+                Packet::Pubrec(pubrec) => {
                     println!("Get Pubrec from broker");
+                    let pubrel_packet = Packet::Pubrel(Pubrel {
+                        packet_id: pubrec.packet_id,
+                    });
+                    if let Err(e) = self.frame.send(pubrel_packet).await {
+                        println!("{:?}", e);
+                    }
                 }
                 Packet::Pubcomp(_pubcomp) => {
                     println!("Get Pubcomp from broker");
