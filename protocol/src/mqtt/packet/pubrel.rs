@@ -26,7 +26,7 @@ impl Decode for Pubrel {
             Err(DecodeError::InvalidMessageFormat)
         } else {
             let header = buffer.get_u8();
-            println!("Get Pubrec packet : 0x{:02x}", header);
+            println!("Get Pubrel packet : 0x{:02x}", header);
             buffer.get_u8();
             let packet_id = buffer.get_u16();
             buffer.clear();

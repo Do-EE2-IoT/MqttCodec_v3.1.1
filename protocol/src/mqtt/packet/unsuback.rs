@@ -9,7 +9,7 @@ use crate::mqtt::error::encode::EncodeError;
 
 #[derive(Debug, PartialEq)]
 pub struct Unsuback {
-    packet_id: u16,
+    pub packet_id: u16,
 }
 
 impl Encode for Unsuback {

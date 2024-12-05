@@ -27,7 +27,6 @@ impl Encode for Suback {
 
 impl Decode for Suback {
     fn decode(buffer: &mut BytesMut) -> Result<Packet, DecodeError> {
-        println!("len = {}", buffer.len());
         if buffer.len() != 5 {
             Err(DecodeError::InvalidMessageFormat)
         } else {

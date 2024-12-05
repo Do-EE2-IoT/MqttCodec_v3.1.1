@@ -33,6 +33,34 @@ pub struct Connack {
     pub return_code: u8,
 }
 
+impl Connack {
+    pub fn handle_return_code(&self) {
+        match ConnackReturnCode::from_u8(self.return_code) {
+            ConnackReturnCode::BadUsernameOrPassword => {
+                println!("Bad username or password.");
+            }
+            ConnackReturnCode::IdentifierReject => {
+                println!("Client identifier rejected.");
+            }
+            ConnackReturnCode::ServerUnavailable => {
+                println!("Server unavailable.");
+            }
+            ConnackReturnCode::UnknownCode => {
+                println!("Unknown return code.");
+            }
+            ConnackReturnCode::UnacceptableProtocolVersion => {
+                println!("Unacceptable protocol version.");
+            }
+            ConnackReturnCode::NotAuthorized => {
+                println!("Not authorized.");
+            }
+            ConnackReturnCode::ConnectionAccept => {
+                println!("Connection accepted.");
+            }
+        }
+    }
+}
+
 impl Encode for Connack {
     fn encode(&self, buffer: &mut BytesMut) -> Result<(), EncodeError> {
         buffer.put_u8(ControlPackets::Connack as u8);

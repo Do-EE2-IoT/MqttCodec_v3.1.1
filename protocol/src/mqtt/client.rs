@@ -5,22 +5,23 @@ use super::{
     codec::mqttcodec::MqttCodec,
     error::mqtt_error::MqttError,
     packet::{
-        self,
         connect::Connect,
         disconnect::Disconnect,
         pingreq::Pingreq,
         publish::{Last4BitsFixHeader, Publish},
+        pubrec::Pubrec,
         subscribe::Subscribe,
         unsubscribe::Unsubscribe,
     },
     types::Packet,
 };
-use crate::mqtt::packet::{connack::ConnackReturnCode, pubrel::Pubrel};
+use crate::mqtt::packet::pubrel::Pubrel;
 use tokio::net::TcpStream;
 pub struct Client {
     frame: Framed<TcpStream, MqttCodec>,
     client_id: String,
     keep_alive: u16,
+    pub current_packet_id: u16,
 }
 
 impl Client {
@@ -34,6 +35,7 @@ impl Client {
             frame,
             client_id: client_id.to_string(),
             keep_alive,
+            current_packet_id: 1,
         }
     }
 
@@ -47,17 +49,6 @@ impl Client {
         }
         Ok(())
     }
-
-    // pub async fn check_connect_timeout(&mut self) -> Result<(), MqttError> {
-    //     if let Some(Ok(message)) = self.frame.next().await {
-    //         match message {
-    //             Packet::Connack(connack) => {
-    //                 println!()
-    //             },
-    //             _ => Err(MqttError::ConnectError),
-    //         }
-    //     }
-    // }
 
     pub async fn disconnect(&mut self) -> Result<(), MqttError> {
         let disconnect_packet = Packet::Disconnect(Disconnect);
@@ -90,7 +81,7 @@ impl Client {
         }
         let mut packet_id: Option<u16> = None;
         if qos > 0 {
-            packet_id = Some(1);
+            packet_id = Some(self.next_packet_id());
         }
 
         let publish_packet = Packet::Publish(Publish {
@@ -117,7 +108,7 @@ impl Client {
             return Err(MqttError::InvalidQos);
         }
         let subscribe_packet = Packet::Subscribe(Subscribe {
-            packet_id: 2,
+            packet_id: self.next_packet_id(),
             topic: topic.to_string(),
             qos,
         });
@@ -130,7 +121,7 @@ impl Client {
 
     pub async fn unsubscribe(&mut self, topic: String) -> Result<(), MqttError> {
         let unsubscribe_packet = Packet::Unsubscribe(Unsubscribe {
-            packet_id: 3,
+            packet_id: self.next_packet_id(),
             topic,
         });
         if let Err(e) = self.frame.send(unsubscribe_packet).await {
@@ -140,69 +131,30 @@ impl Client {
         Ok(())
     }
 
-    pub async fn wait_message(&mut self) {
-        if let Some(Ok(message)) = self.frame.next().await {
-            match message {
-                Packet::Connack(connack) => {
-                    println!("Get Connack from broker!");
-                    match ConnackReturnCode::from_u8(connack.return_code) {
-                        ConnackReturnCode::BadUsernameOrPassword => {
-                            println!("Bad username or password.");
-                        }
-                        ConnackReturnCode::IdentifierReject => {
-                            println!("Client identifier rejected.");
-                        }
-                        ConnackReturnCode::ServerUnavailable => {
-                            println!("Server unavailable.");
-                        }
-                        ConnackReturnCode::UnknownCode => {
-                            println!("Unknown return code.");
-                        }
-                        ConnackReturnCode::UnacceptableProtocolVersion => {
-                            println!("Unacceptable protocol version.");
-                        }
-                        ConnackReturnCode::NotAuthorized => {
-                            println!("Not authorized.");
-                        }
-                        ConnackReturnCode::ConnectionAccept => {
-                            println!("Connection accepted.");
-                        }
-                    }
-                }
-
-                Packet::Pingres(_pingres) => {
-                    println!("Get Pingres from broker!");
-                }
-                Packet::Puback(_puback) => {
-                    println!("Get Puback from broker!");
-                }
-
-                Packet::Suback(_suback) => {
-                    println!("Get Suback from broker");
-                }
-
-                Packet::Unsuback(_unsuback) => {
-                    println!("Get Unsuback from broker");
-                }
-                Packet::Pubrec(pubrec) => {
-                    println!("Get Pubrec from broker");
-                    let pubrel_packet = Packet::Pubrel(Pubrel {
-                        packet_id: pubrec.packet_id,
-                    });
-                    if let Err(e) = self.frame.send(pubrel_packet).await {
-                        println!("{:?}", e);
-                    }
-                }
-                Packet::Pubcomp(_pubcomp) => {
-                    println!("Get Pubcomp from broker");
-                }
-                Packet::Publish(publish) => {
-                    println!("Get Publish message");
-                    println!("Topic: {}", publish.topic_name);
-                    println!("Payload: {}", publish.payload)
-                }
-                _ => println!(" This message is't belong to client, ignoring...."),
-            }
+    pub async fn send_pubrel(&mut self, pubrec: Pubrec) -> Result<(), MqttError> {
+        let pubrel_packet = Packet::Pubrel(Pubrel {
+            packet_id: pubrec.packet_id,
+        });
+        if let Err(e) = self.frame.send(pubrel_packet).await {
+            println!("{:?}", e);
         }
+        Ok(())
+    }
+
+    pub async fn wait_message(&mut self) -> Result<Packet, MqttError> {
+        if let Some(Ok(message)) = self.frame.next().await {
+            Ok(message)
+        } else {
+            Err(MqttError::ReadMessageError)
+        }
+    }
+    fn next_packet_id(&mut self) -> u16 {
+        let id = self.current_packet_id;
+        self.current_packet_id = if self.current_packet_id == 65535 {
+            1
+        } else {
+            self.current_packet_id + 1
+        };
+        id
     }
 }

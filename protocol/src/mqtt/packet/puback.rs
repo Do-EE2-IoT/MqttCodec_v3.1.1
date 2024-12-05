@@ -9,7 +9,7 @@ use crate::mqtt::error::encode::EncodeError;
 
 #[derive(Debug, PartialEq)]
 pub struct Puback {
-    packet_id: u16,
+    pub packet_id: u16,
 }
 
 impl Encode for Puback {
@@ -27,7 +27,7 @@ impl Decode for Puback {
             Err(DecodeError::InvalidMessageFormat)
         } else {
             let header = buffer.get_u8();
-            println!("Get Puback packet : {:02x}", header);
+            println!("Get Puback packet : 0x{:02x}", header);
             buffer.get_u8();
             let packet_id = buffer.get_u16();
             buffer.clear();

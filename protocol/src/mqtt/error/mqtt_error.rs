@@ -4,4 +4,5 @@ pub enum MqttError {
     PingError,
     InvalidQos,
     InvalidTopic,
+    ReadMessageError,
 }
