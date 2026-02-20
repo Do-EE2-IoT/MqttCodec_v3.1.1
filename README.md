@@ -1,98 +1,94 @@
 # MqttCodec v3.1.1
 
-Rust workspace triển khai MQTT protocol v3.1.1 từ đầu, bao gồm:
+A Rust workspace implementing the MQTT protocol v3.1.1 from scratch, including:
 
-- **`protocol`** — thư viện core: encode/decode tất cả packet types, codec Framed
-- **`mqtt_client`** — binary client tương tác qua console
-- **`mqtt_broker`** — binary broker *(đang phát triển)*
+- **`protocol`** — core library: encode/decode all packet types, Framed codec
+- **`mqtt_client`** — interactive console client binary
+- **`mqtt_broker`** — broker binary *(under development)*
 
 ---
 
-## Quick Test — Chạy Client Ngay
+## Quick Test — Run the Client Now
 
-> Client kết nối tới `127.0.0.1:1885`. Cần một MQTT broker thật đang chạy tại cổng đó.
+> The client connects to `127.0.0.1:1885`. A running MQTT broker on that port is required.
 
-### Bước 1 — Cài & chạy Mosquitto (broker nhẹ, miễn phí)
+### Step 1 — Install & run Mosquitto (lightweight, free broker)
 
 ```bash
-# Windows (dùng winget hoặc tải tại https://mosquitto.org/download/)
+# Windows (via winget or download at https://mosquitto.org/download/)
 winget install mosquitto
 
-# Khởi động broker tại cổng 1885 (mặc định là 1883 — cần chỉ rõ)
+# Start broker on port 1885 (default is 1883 — must match client config)
 mosquitto -p 1885 -v
-#   -p 1885  : đổi cổng khớp với client
-#   -v       : verbose, in log mỗi packet nhận được
+#   -p 1885  : change port to match client
+#   -v       : verbose, print log for every received packet
 ```
 
-### Bước 2 — Build & chạy client
+### Step 2 — Build & run the client
 
 ```bash
-# Từ thư mục gốc workspace
+# From workspace root
 cargo run -p mqtt_client
 ```
 
-Client sẽ tự động gửi `CONNECT` tới broker. Nếu Mosquitto đang chạy, bạn sẽ thấy log:
+If Mosquitto is running, you should see:
 
 ```
 Connection accepted.
 ```
 
-### Bước 3 — Thử các lệnh trong console client
+### Step 3 — Try console commands
 
 ```
-# Subscribe một topic (QoS 0)
+# Subscribe to a topic (QoS 0)
 sub /test 0
 
-# Publish một tin nhắn (QoS 0 — không có ACK)
+# Publish a message (QoS 0 — no ACK)
 pub /test 0 Hello world
 
-# Publish QoS 1 (sẽ nhận PUBACK từ broker)
+# Publish QoS 1 (broker will reply with PUBACK)
 pub /test 1 Hello QoS1
 
-# Gửi ping thủ công
+# Manual ping
 ping
 
-# Ngắt kết nối
+# Disconnect
 disconnect
 ```
 
-### Bước 4 — Dùng mosquitto_pub / mosquitto_sub để kiểm tra chiều ngược lại
-
-Mở thêm terminal, dùng tool CLI của Mosquitto để publish vào topic mà client đang subscribe:
+### Step 4 — Use mosquitto_pub / mosquitto_sub to test the other direction
 
 ```bash
-# Gửi tin vào /test — client sẽ in ra "Get Publish message"
+# Send to /test — client will print "Get Publish message"
 mosquitto_pub -p 1885 -t /test -m "Hello from mosquitto_pub"
 
-# Hoặc subscribe để nhận tin client publish
+# Or subscribe to see messages the client publishes
 mosquitto_sub -p 1885 -t /test -v
 ```
 
-### Chạy Unit Test (không cần broker)
+### Run Unit Tests (no broker needed)
 
 ```bash
-# Test encode/decode round-trip cho tất cả packet types
+# Encode/decode round-trip tests for all packet types
 cargo test
 
-# Test riêng một packet
+# Test a specific packet module
 cargo test -p protocol connect
 cargo test -p protocol publish
 ```
 
 ---
 
-
-
 ## Workspace Structure
 
 ```
 MqttCodec_v3.1.1/
 ├── Cargo.toml                  ← Workspace root (resolver = "2")
-├── README.md                   ← File này
+├── README.md                   ← This file
 ├── docs/
-│   └── update_client.md        ← Phân tích kiến trúc & đề xuất cải thiện
+│   └── update_client.md        ← Architecture analysis & improvement proposals
 │
-├── protocol/                   ← Crate thư viện (lib)
+├── protocol/                   ← Library crate (lib)
 │   └── src/mqtt/
 │       ├── lib.rs
 │       ├── mod.rs
@@ -100,7 +96,7 @@ MqttCodec_v3.1.1/
 │       ├── fix_header.rs       ← enum ControlPackets (packet type byte)
 │       ├── utils.rs            ← encode_utf8 / decode_utf8
 │       ├── client.rs           ← struct Client (async TCP + pending_ack)
-│       ├── broker.rs           ← stub (chưa implement)
+│       ├── broker.rs           ← stub (not yet implemented)
 │       ├── codec/
 │       │   └── mqttcodec.rs    ← impl Encoder<Packet> + Decoder (Framed)
 │       ├── error/
@@ -123,12 +119,12 @@ MqttCodec_v3.1.1/
 │           ├── pingres.rs      ← PINGRESP
 │           └── disconnect.rs   ← DISCONNECT
 │
-├── mqtt_client/                ← Binary client
+├── mqtt_client/                ← Client binary
 │   └── src/
 │       ├── main.rs             ← Event loop (tokio::select!)
 │       └── input.rs            ← ConsoleInput, InputUser, FromStr parser
 │
-└── mqtt_broker/                ← Binary broker (TODO)
+└── mqtt_broker/                ← Broker binary (TODO)
     └── src/
         └── main.rs             ← Stub
 ```
@@ -137,52 +133,52 @@ MqttCodec_v3.1.1/
 
 ## Dependencies
 
-| Crate | Version | Dùng để |
+| Crate | Version | Purpose |
 |---|---|---|
 | `tokio` | 1.x (full) | Async runtime, TcpStream, mpsc, oneshot, interval |
-| `tokio-util` | 0.6 (codec) | `Framed` — đóng gói TcpStream + codec |
+| `tokio-util` | 0.6 (codec) | `Framed` — wraps TcpStream with a codec |
 | `futures` | 0.3 | `SinkExt`, `StreamExt`, `TryFutureExt` |
 | `bytes` | — | `BytesMut`, `Buf`, `BufMut` |
-| `async-trait` | 0.1 | trait `Input` có async fn |
+| `async-trait` | 0.1 | async fn in the `Input` trait |
 
 ---
 
-## Kiến Trúc Tổng Quan (Client)
+## Client Architecture Overview
 
 ```mermaid
 flowchart TD
     subgraph INPUT ["INPUT LAYER"]
-        CON["fa:fa-keyboard Console\nstdin (blocking)"] 
-        CI["ConsoleInput::pop().await\n(spawn task)"] 
-        PARSE["InputUser::from_str(line)\npub / sub / unsub / ping / disconnect"]
+        CON["Console<br/>stdin (blocking)"]
+        CI["ConsoleInput::pop().await<br/>(spawned task)"]
+        PARSE["InputUser::from_str(line)<br/>pub / sub / unsub / ping / disconnect"]
     end
 
     subgraph CHANNEL ["CHANNEL (mpsc)"]
-        TX["tx: mpsc::Sender\u003cInputUser\u003e"]
-        RX["rx: mpsc::Receiver\u003cInputUser\u003e"]
+        TX["tx: mpsc::Sender&lt;InputUser&gt;"]
+        RX["rx: mpsc::Receiver&lt;InputUser&gt;"]
     end
 
     subgraph EVENTLOOP ["EVENT LOOP (tokio::select!)"]
         SEL{"tokio::select!"}
-        B1["Branch 1\nKeep-Alive tick (60s)"]
-        B2["Branch 2\nBroker message"]
-        B3["Branch 3\nUser command"]
+        B1["Branch 1<br/>Keep-Alive tick (60s)"]
+        B2["Branch 2<br/>Broker message"]
+        B3["Branch 3<br/>User command"]
     end
 
     subgraph CLIENT ["struct Client"]
-        FRAME["Framed\u003cTcpStream, MqttCodec\u003e"]
-        MAP["pending_ack\nHashMap\u003cu16, oneshot::Sender\u003cPacket\u003e\u003e"]
+        FRAME["Framed&lt;TcpStream, MqttCodec&gt;"]
+        MAP["pending_ack<br/>HashMap&lt;u16, oneshot::Sender&lt;Packet&gt;&gt;"]
         ID["current_packet_id: u16"]
     end
 
     subgraph PROTOCOL ["PROTOCOL CRATE"]
-        ENC["Encode\nPacket \u2192 BytesMut"]
-        DEC["Decode\nBytesMut \u2192 Packet"]
-        CODEC["MqttCodec\n(impl Encoder + Decoder)"]
+        ENC["Encoder<br/>Packet → BytesMut"]
+        DEC["Decoder<br/>BytesMut → Packet"]
+        CODEC["MqttCodec<br/>(impl Encoder + Decoder)"]
     end
 
     subgraph BROKER ["MQTT BROKER (external)"]
-        BRK["127.0.0.1:1885\nMosquitto / mqtt_broker"]
+        BRK["127.0.0.1:1885<br/>Mosquitto / mqtt_broker"]
     end
 
     CON --> CI --> PARSE --> TX --> RX
@@ -201,7 +197,7 @@ flowchart TD
 
 ## MQTT Packet Format (v3.1.1)
 
-Mỗi packet MQTT có cấu trúc:
+Each MQTT packet has the following structure:
 
 ```
 ┌─────────────────┬──────────────────────────┬──────────────────────┐
@@ -211,19 +207,19 @@ Mỗi packet MQTT có cấu trúc:
 
 Fixed Header byte:
   Bit 7–4: Packet Type  (4 bits)
-  Bit 3–0: Flags        (4 bits, tùy loại packet)
+  Bit 3–0: Flags        (4 bits, varies by type)
 
 Remaining Length: Variable Length Encoding (VLE)
-  - Mỗi byte dùng 7 bit cho giá trị, bit 7 là cờ "còn byte tiếp"
-  - 1 byte:  giá trị 0–127
-  - 2 bytes: giá trị 128–16.383
-  - 3 bytes: giá trị 16.384–2.097.151
-  - 4 bytes: giá trị 2.097.152–268.435.455
+  - Each byte uses 7 bits for value, bit 7 signals "more bytes follow"
+  - 1 byte:  value 0–127
+  - 2 bytes: value 128–16,383
+  - 3 bytes: value 16,384–2,097,151
+  - 4 bytes: value 2,097,152–268,435,455
 ```
 
-### Bảng các Packet Type
+### Packet Type Reference
 
-| Type | Hex | Tên | Client→Broker | Broker→Client |
+| Type | Hex | Name | Client→Broker | Broker→Client |
 |---|---|---|---|---|
 | 1 | `0x10` | CONNECT | ✓ | |
 | 2 | `0x20` | CONNACK | | ✓ |
@@ -240,27 +236,27 @@ Remaining Length: Variable Length Encoding (VLE)
 | 13 | `0xd0` | PINGRESP | | ✓ |
 | 14 | `0xe0` | DISCONNECT | ✓ | |
 
-> **Lưu ý:** `PUBLISH` có 4 bit flags động (DUP | QoS[1] | QoS[0] | RETAIN) — cần mask `first_byte & 0xF0` trước khi so sánh packet type.
+> **Note:** `PUBLISH` has 4 dynamic flag bits (DUP | QoS[1] | QoS[0] | RETAIN) — must mask `first_byte & 0xF0` before comparing packet type.
 
 ---
 
-## Protocol Crate — Luồng Encode/Decode
+## Protocol Crate — Encode/Decode Flow
 
 ```mermaid
 flowchart LR
     subgraph APP ["Application"]
-        PUB["client.publish()\nclient.subscribe()"]
+        PUB["client.publish()<br/>client.subscribe()"]
         MSG["client.wait_message()"]
     end
 
     subgraph CODEC ["MqttCodec (Framed)"]
         direction TB
-        ENC["Encoder\nPacket → BytesMut\nput_u8 / put_u16 / put_slice"]
-        DEC["Decoder\nBytesMut → Packet\ntry_from header byte\n→ dispatch decode()"]
+        ENC["Encoder<br/>Packet → BytesMut<br/>put_u8 / put_u16 / put_slice"]
+        DEC["Decoder<br/>BytesMut → Packet<br/>try_from header byte<br/>→ dispatch decode()"]
     end
 
     subgraph TCP ["TcpStream"]
-        WIRE["Raw bytes\non the wire"]
+        WIRE["Raw bytes<br/>on the wire"]
     end
 
     PUB -- "Packet::Publish(...)" --> ENC
@@ -269,15 +265,15 @@ flowchart LR
     DEC -- "Ok(Some(Packet))" --> MSG
 ```
 
-**Encode steps** (ví dụ: PUBLISH):
+**Encode steps** (example: PUBLISH):
 1. `put_u8(0x30 | flags)` ← Fixed Header
-2. `put_u8(remaining_length)` ← *TODO: dùng VLE đa byte*
+2. `put_u8(remaining_length)` ← *TODO: implement multi-byte VLE*
 3. `put_u16(topic.len())` + `put_slice(topic)` ← UTF-8 string
-4. `put_u16(packet_id)` ← chỉ nếu QoS > 0
+4. `put_u16(packet_id)` ← only if QoS > 0
 5. `put_slice(payload)` ← Payload
 
-**Decode steps** (ví dụ: CONNACK):
-1. `get_u8()` → `ControlPackets::try_from(byte)` ← xác định loại packet
+**Decode steps** (example: CONNACK):
+1. `get_u8()` → `ControlPackets::try_from(byte)` ← identify packet type
 2. `get_u8()` → remaining length
 3. `get_u8()` → session_present flag
 4. `get_u8()` → return_code
@@ -285,15 +281,15 @@ flowchart LR
 
 ---
 
-## Client Flow — Chi Tiết
+## Client Flow — Detail
 
-### Khởi Tạo & Channels
+### Startup & Channels
 
 ```mermaid
 sequenceDiagram
     participant main
-    participant ConsoleTask as "tokio::spawn\nConsoleInput task"
-    participant mpsc as "mpsc channel\n(InputUser)"
+    participant ConsoleTask as "tokio::spawn<br/>ConsoleInput task"
+    participant mpsc as "mpsc channel<br/>(InputUser)"
     participant Client
     participant Broker
 
@@ -313,7 +309,7 @@ sequenceDiagram
     end
 ```
 
-### Event Loop — 3 Nhánh `tokio::select!`
+### Event Loop — 3 Branches of `tokio::select!`
 
 ```mermaid
 flowchart TD
@@ -325,14 +321,14 @@ flowchart TD
     end
 
     subgraph B2 ["Branch 2 — Broker Message"]
-        T2["client.wait_message()\nframe.next().await"] --> MATCH
+        T2["client.wait_message()<br/>frame.next().await"] --> MATCH
         MATCH{"match Packet"}
         MATCH -->|Connack| CA["handle_return_code()"]
         MATCH -->|Pingres| PR["log"]
         MATCH -->|Publish| PB["log topic + payload"]
         MATCH -->|Suback| RA1["resolve_ack(id, Packet::Suback)"]
         MATCH -->|Puback| RA2["resolve_ack(id, Packet::Puback)"]
-        MATCH -->|Pubrec| PUBREL["client.send_pubrel()\n(QoS 2 auto-step)"]
+        MATCH -->|Pubrec| PUBREL["client.send_pubrel()<br/>(QoS 2 auto-step)"]
         MATCH -->|Pubcomp| RA3["resolve_ack(id, Packet::Pubcomp)"]
         MATCH -->|Unsuback| UN["log"]
     end
@@ -341,25 +337,25 @@ flowchart TD
         T3["rx.recv()"] --> UCMD
         UCMD{"match InputUser"}
         UCMD -->|Publish| UP["client.publish()"]
-        UCMD -->|Subscribe| US["client.subscribe()\n→ rx_ack"]
-        US --> SP["tokio::spawn\ntimeout(5s, rx_ack)"]
+        UCMD -->|Subscribe| US["client.subscribe()<br/>→ rx_ack"]
+        US --> SP["tokio::spawn<br/>timeout(5s, rx_ack)"]
         UCMD -->|Unsubscribe| UU["client.unsubscribe()"]
         UCMD -->|Ping| UPI["client.ping()"]
         UCMD -->|Disconnect| UD["client.disconnect()"]
     end
 ```
 
-### pending\_ack — Cơ Chế ACK Tổng Quát
+### pending\_ack — Generic ACK Mechanism
 
 ```mermaid
 sequenceDiagram
-    participant Caller as "main.rs\n(Subscribe handler)"
-    participant Client as "Client\npending_ack: HashMap"
-    participant oneshot as "oneshot channel\n(tx / rx)"
+    participant Caller as "main.rs<br/>(Subscribe handler)"
+    participant Client as "Client<br/>pending_ack: HashMap"
+    participant oneshot as "oneshot channel<br/>(tx / rx)"
     participant Broker
 
     Caller->>Client: client.subscribe(topic, qos)
-    Note over Client: packet_id = next_packet_id()\n(tx, rx) = oneshot::channel()
+    Note over Client: packet_id = next_packet_id()<br/>(tx, rx) = oneshot::channel()
     Client->>Client: pending_ack.insert(packet_id, tx)
     Client->>Broker: SUBSCRIBE { packet_id }
     Client-->>Caller: Ok(rx)  [Receiver]
@@ -373,14 +369,14 @@ sequenceDiagram
     oneshot-->>Caller: rx yields Ok(Packet::Suback)
     Note over Caller: ✓ Subscribed OK, packet_id=N
 
-    rect rgb(200,50,50)
-        Note over Caller: Nếu broker không gửi SAuback trong 5s:
-        Caller->>Caller: Err(timeout) → log “✗ SUBACK timeout”
-        Note over Client: rx dropped → tx.send() trả Err (bỏ qua)
+    rect rgb(160, 40, 40)
+        Note over Caller: If broker does not reply within 5s:
+        Caller->>Caller: Err(timeout) → log "✗ SUBACK timeout"
+        Note over Client: rx dropped → tx.send() returns Err (ignored)
     end
 ```
 
-> Cùng pattern cho `Puback` (QoS 1) và `Pubcomp` (QoS 2). `Pubrec` không dùng `pending_ack` vì chưa phải ACK cuối.
+> Same pattern applies to `Puback` (QoS 1) and `Pubcomp` (QoS 2). `Pubrec` bypasses `pending_ack` because it is not the final ACK.
 
 ---
 
@@ -414,13 +410,13 @@ sequenceDiagram
     end
 ```
 
-> `PUBREC` không đi qua `pending_ack` vì không phải ACK cuối — client phải gửi `PUBREL` ngay theo protocol.
+> `PUBREC` does not go through `pending_ack` because it is not the final ACK — the client must immediately send `PUBREL` as required by the protocol.
 
 ---
 
 ## Console Commands
 
-| Lệnh | Format | Ví dụ |
+| Command | Format | Example |
 |---|---|---|
 | Publish | `pub <topic> <qos> <message>` | `pub /sensors/temp 1 25.5` |
 | Subscribe | `sub <topic> <qos>` | `sub /alerts 0` |
@@ -430,21 +426,21 @@ sequenceDiagram
 
 ---
 
-## Broker — Kế Hoạch Triển Khai
+## Broker — Implementation Plan
 
-> **Trạng thái hiện tại:** Broker là stub `println!("Hello, world!")` — chưa implement.
+> **Current status:** Broker is a stub `println!("Hello, world!")` — not yet implemented.
 
-### Kiến Trúc Đề Xuất
+### Proposed Architecture
 
 ```
 mqtt_broker/src/
-├── main.rs                 ← Bind TCP, accept connections
-├── broker.rs               ← Broker state (subscriptions map, client map)
-├── session.rs              ← Task per-client: đọc/ghi packet
-└── router.rs               ← Route PUBLISH đến đúng subscriber
+├── main.rs       ← Bind TCP, accept connections
+├── broker.rs     ← Broker state (subscription map, client map)
+├── session.rs    ← Per-client task: read/write packets
+└── router.rs     ← Route PUBLISH to matching subscribers
 ```
 
-### Flow Broker Cần Implement
+### Required Flow
 
 ```
 main():
@@ -457,45 +453,44 @@ main():
 handle_client(stream, state):
   frame = Framed::new(stream, MqttCodec)
   loop {
-    packet = frame.next().await  ← đọc packet từ client
+    packet = frame.next().await
     match packet {
-      CONNECT    → xác thực, lưu session, gửi CONNACK
-      SUBSCRIBE  → lưu (topic, client_id) vào subscription map, gửi SUBACK
-      PUBLISH    → tìm subscriber theo topic, forward packet, gửi PUBACK/PUBREC
-      PINGREQ    → gửi PINGRESP
-      DISCONNECT → xóa session, đóng kết nối
-      ...
+      CONNECT    → authenticate, save session, send CONNACK
+      SUBSCRIBE  → register (topic, client_id) in subscription map, send SUBACK
+      PUBLISH    → find subscribers for topic, forward packet, send PUBACK/PUBREC
+      PINGREQ    → send PINGRESP
+      DISCONNECT → remove session, close connection
     }
   }
 
-Subscription Map (cần thread-safe):
+Subscription Map (must be thread-safe):
   Arc<Mutex<HashMap<String, Vec<ClientTx>>>>
-  //                ─────────   ──────────
-  //                topic       danh sách Sender đến từng client session
+  //                ───────── ──────────────
+  //                topic     list of Senders for each client session
 ```
 
-### Các Thách Thức Cần Xử Lý
+### Challenges
 
-| Chủ đề | Mô tả |
+| Topic | Description |
 |---|---|
-| Shared state | Dùng `Arc<Mutex<...>>` hoặc `Arc<RwLock<...>>` cho subscription map |
-| Per-client keep-alive | Track thời điểm nhận packet cuối, ngắt kết nối nếu quá `1.5 × keep_alive` |
-| QoS 1/2 retry | Lưu pending publish vào queue, retry nếu không nhận ACK |
-| Topic matching | Wildcard `+` (single level) và `#` (multi level) theo MQTT spec |
-| Clean session | Nếu `clean_session=1` thì xóa subscriptions khi disconnect |
+| Shared state | Use `Arc<Mutex<...>>` or `Arc<RwLock<...>>` for subscription map |
+| Per-client keep-alive | Track last packet time, disconnect if > `1.5 × keep_alive` |
+| QoS 1/2 retry | Store pending publish in queue, retry if no ACK received |
+| Topic matching | Wildcards `+` (single level) and `#` (multi level) per MQTT spec |
+| Clean session | If `clean_session=1`, remove subscriptions on disconnect |
 
 ---
 
 ## Running
 
 ```bash
-# Build toàn bộ workspace
+# Build entire workspace
 cargo build
 
-# Chạy client (cần broker đang chạy tại 127.0.0.1:1885)
+# Run client (requires broker at 127.0.0.1:1885)
 cargo run -p mqtt_client
 
-# Chạy test (encode/decode round-trip)
+# Run unit tests (encode/decode round-trip)
 cargo test
 ```
 
@@ -503,14 +498,14 @@ cargo test
 
 ## Known Issues & TODOs
 
-| # | File | Vấn đề |
+| # | File | Issue |
 |---|---|---|
-| 1 | `publish.rs` | `remaining_length` encode chỉ 1 byte → lỗi với payload > 127 byte. Cần implement **Variable Length Encoding** |
-| 2 | `mqttcodec.rs` | `ControlPackets::try_from(src[0])` không mask 4 bit thấp → `PUBLISH QoS=1` (`0x32`) sẽ fail decode |
-| 3 | `client.rs` | `Client::new()` vẫn dùng `expect()` → panic khi broker không online |
-| 4 | `mqtt_error.rs` | Chưa implement `std::error::Error`, không dùng được với `thiserror` |
-| 5 | `publish.rs` | `payload: String` chỉ hỗ trợ UTF-8, không hỗ trợ binary payload |
-| 6 | `main.rs` | Không có PINGRESP timeout — nếu broker im lặng client không phát hiện |
-| 7 | `mqtt_broker` | Chưa implement |
+| 1 | `publish.rs` | `remaining_length` encoded as 1 byte only → fails for payload > 127 bytes. Needs **Variable Length Encoding** |
+| 2 | `mqttcodec.rs` | `ControlPackets::try_from(src[0])` does not mask lower 4 bits → `PUBLISH QoS=1` (`0x32`) will fail decode |
+| 3 | `client.rs` | `Client::new()` still uses `expect()` → panics when broker is offline |
+| 4 | `mqtt_error.rs` | Does not implement `std::error::Error`, incompatible with `thiserror` |
+| 5 | `publish.rs` | `payload: String` is UTF-8 only, binary payloads not supported |
+| 6 | `main.rs` | No PINGRESP timeout — client cannot detect a silent broker |
+| 7 | `mqtt_broker` | Not yet implemented |
 
-Xem chi tiết phân tích và hướng dẫn từng bước tại [`docs/update_client.md`](./docs/update_client.md).
+See detailed analysis and step-by-step guidance in [`docs/update_client.md`](./docs/update_client.md).
