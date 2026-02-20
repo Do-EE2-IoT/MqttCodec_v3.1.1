@@ -1,4 +1,4 @@
 [workspace]
-members = [ "mqtt_broker", "mqtt_client","protocol"]
-
+members = [ "mqtt_broker", "mqtt_client", "protocol"]
+resolver = "2"
 

@@ -1,7 +1,7 @@
 mod input;
 use crate::input::{ConsoleInput, Input, InputUser};
+use protocol::mqtt::client::Client;
 use protocol::mqtt::types::Packet;
-use protocol::mqtt::{client::Client, packet::suback::Suback};
 use std::time::Duration;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::timeout;
@@ -17,36 +17,11 @@ async fn console_input_handle(tx: Sender<InputUser>) {
     }
 }
 
-async fn suback_timeout_handle(mut rx: Receiver<Suback>) {
-    while let Some(suback_req) = rx.recv().await {
-        println!(
-            "Waiting broker response suback with packet id = {}",
-            suback_req.packet_id
-        );
-        match timeout(Duration::from_secs(1), rx.recv()).await {
-            Ok(Some(suback_response)) => {
-                if suback_response == suback_req {
-                    println!(
-                        "Get Suback from broker with packet id = {}",
-                        suback_response.packet_id
-                    );
-                }
-            }
-            Ok(None) => println!("???"),
-            Err(_) => {
-                println!("Must send subscribe message again");
-            }
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     let (tx, mut rx): (Sender<InputUser>, Receiver<InputUser>) = tokio::sync::mpsc::channel(1);
-    let (tx_suback, rx_suback): (Sender<Suback>, Receiver<Suback>) = tokio::sync::mpsc::channel(2);
 
     tokio::spawn(console_input_handle(tx));
-    tokio::spawn(suback_timeout_handle(rx_suback));
 
     let mut client = Client::new("127.0.0.1", 1885, "Nguyen Van Do", 60).await;
     client
@@ -72,22 +47,25 @@ async fn main() {
                             println!("Get Pingres from broker!");
                         }
                         Packet::Puback(puback) => {
-                            println!("Get Puback from broker with packet id = {}", puback.packet_id);
+                            // QoS 1 ACK: resolve caller đang chờ
+                            client.resolve_ack(puback.packet_id, Packet::Puback(puback));
                         }
                         Packet::Suback(suback) => {
-                            tx_suback.send(suback).await.expect("Channel send must success");
+                            // Subscribe ACK: resolve caller đang chờ
+                            client.resolve_ack(suback.packet_id, Packet::Suback(suback));
                         }
                         Packet::Unsuback(unsuback) => {
                             println!("Get Unsuback from broker with packet id = {}", unsuback.packet_id);
                         }
                         Packet::Pubrec(pubrec) => {
-                            println!("Get Pubrec from broker with packet id = {}", pubrec.packet_id);
+                            // QoS 2 step 2: tự động gửi PUBREL, không cần pending_ack
                             if let Err(e) = client.send_pubrel(pubrec).await {
                                 println!("{:?}", e);
                             }
                         }
                         Packet::Pubcomp(pubcomp) => {
-                            println!("Get Pubcomp from broker with packet id = {}", pubcomp.packet_id);
+                            // QoS 2 final ACK: resolve caller đang chờ
+                            client.resolve_ack(pubcomp.packet_id, Packet::Pubcomp(pubcomp));
                         }
                         Packet::Publish(publish) => {
                             println!("Get Publish message");
@@ -117,16 +95,25 @@ async fn main() {
                             println!("{:?}", e);
                         }
                     },
-                    InputUser::Subscribe {
-                        topic,
-                        qos,
-                    } => {
-                        if let Err(e) = client.subscribe(topic.as_str(), qos).await {
-                            println!("Client can't send subscribe to broker");
-                            println!("{:?}", e);
+                    InputUser::Subscribe { topic, qos } => {
+                        match client.subscribe(&topic, qos).await {
+                            Ok(rx_ack) => {
+                                tokio::spawn(async move {
+                                    match timeout(Duration::from_secs(5), rx_ack).await {
+                                        Ok(Ok(Packet::Suback(suback))) => {
+                                            println!("\u{2713} Subscribed OK, packet_id={}", suback.packet_id);
+                                        }
+                                        Ok(Ok(_)) => println!("Unexpected ACK type"),
+                                        Ok(Err(_)) => println!("Sender dropped before ACK"),
+                                        Err(_)     => println!("\u{2717} SUBACK timeout"),
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                println!("Client can't send subscribe to broker");
+                                println!("{:?}", e);
+                            }
                         }
-                        let suback_req = Suback { packet_id: client.get_current_packet_id() - 1, qos };
-                        tx_suback.send(suback_req).await.expect("Channel send must success");
                     },
                     InputUser::Disconnect => {
                         println!("Disconnect");

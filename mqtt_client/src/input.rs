@@ -103,6 +103,7 @@ impl FromStr for InputUser {
                     }
                 }
                 "disconnect" => Ok(InputUser::Disconnect),
+                "ping" => Ok(InputUser::Ping),
                 _ => Err("Command invalid".to_string()),
             }
         }

@@ -1,4 +1,6 @@
 use futures::{SinkExt, StreamExt, TryFutureExt};
+use std::collections::HashMap;
+use tokio::sync::oneshot;
 use tokio_util::codec::Framed;
 
 use super::{
@@ -22,6 +24,7 @@ pub struct Client {
     client_id: String,
     keep_alive: u16,
     current_packet_id: u16,
+    pending_ack: HashMap<u16, oneshot::Sender<Packet>>,
 }
 
 impl Client {
@@ -44,6 +47,7 @@ impl Client {
             client_id: client_id.to_string(),
             keep_alive,
             current_packet_id: 1,
+            pending_ack: HashMap::new(),
         }
     }
 
@@ -112,24 +116,33 @@ impl Client {
         Ok(())
     }
 
-    pub async fn subscribe(&mut self, topic: &str, qos: u8) -> Result<(), MqttError> {
+    pub async fn subscribe(
+        &mut self,
+        topic: &str,
+        qos: u8,
+    ) -> Result<oneshot::Receiver<Packet>, MqttError> {
         if topic.is_empty() {
             return Err(MqttError::InvalidTopic);
         }
         if qos > 2 {
             return Err(MqttError::InvalidQos);
         }
+        // Lưu packet_id vào biến TRƯỚC khi tạo packet
+        // next_packet_id() tăng counter ngay sau khi trả, nên phải dùng biến trung gian
+        let packet_id = self.next_packet_id();
         let subscribe_packet = Packet::Subscribe(Subscribe {
-            packet_id: self.next_packet_id(),
+            packet_id,
             topic: topic.to_string(),
             qos,
         });
+        let (tx, rx): (oneshot::Sender<Packet>, oneshot::Receiver<Packet>) = oneshot::channel();
+        self.pending_ack.insert(packet_id, tx); // key khớp với packet đã gửi
         self.frame
             .send(subscribe_packet)
             .map_err(|_| MqttError::SubscribeError)
             .await?;
 
-        Ok(())
+        Ok(rx)
     }
 
     pub async fn unsubscribe(&mut self, topic: String) -> Result<(), MqttError> {
@@ -171,5 +184,16 @@ impl Client {
             self.current_packet_id + 1
         };
         id
+    }
+
+    /// Gửi `packet` về cho caller đang await rx (oneshot) với key là `packet_id`.
+    /// Dùng chung cho mọi loại ACK: Suback, Puback, Pubcomp, ...
+    pub fn resolve_ack(&mut self, packet_id: u16, packet: Packet) {
+        if let Some(tx) = self.pending_ack.remove(&packet_id) {
+            let _ = tx.send(packet);
+            // Nếu caller đã timeout và drop rx thì send() trả Err — bỏ qua là đúng
+        } else {
+            println!("Received unexpected ACK for packet_id={packet_id}");
+        }
     }
 }
