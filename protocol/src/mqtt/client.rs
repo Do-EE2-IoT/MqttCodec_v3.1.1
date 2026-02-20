@@ -1,4 +1,4 @@
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, TryFutureExt};
 use tokio_util::codec::Framed;
 
 use super::{
@@ -21,11 +21,19 @@ pub struct Client {
     frame: Framed<TcpStream, MqttCodec>,
     client_id: String,
     keep_alive: u16,
-    pub current_packet_id: u16,
+    current_packet_id: u16,
 }
 
 impl Client {
-    pub async fn config(host: &str, port: u16, client_id: &str, keep_alive: u16) -> Self {
+    pub fn get_current_packet_id(&self) -> u16 {
+        self.current_packet_id
+    }
+
+    pub fn set_current_packet_id(&mut self, packet_id: u16) {
+        self.current_packet_id = packet_id;
+    }
+
+    pub async fn new(host: &str, port: u16, client_id: &str, keep_alive: u16) -> Self {
         let addr = format!("{}:{}", host, port);
         let stream = TcpStream::connect(addr)
             .await
@@ -40,29 +48,32 @@ impl Client {
     }
 
     pub async fn connect(&mut self) -> Result<(), MqttError> {
-        let connect_packet = Packet::Connect(Connect {
+        let connect_pkg: Packet = Packet::Connect(Connect {
             keep_alive: self.keep_alive,
             client_id: self.client_id.clone(),
         });
-        if let Err(e) = self.frame.send(connect_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(connect_pkg)
+            .map_err(|_| MqttError::ConnectError)
+            .await?;
         Ok(())
     }
 
     pub async fn disconnect(&mut self) -> Result<(), MqttError> {
-        let disconnect_packet = Packet::Disconnect(Disconnect);
-        if let Err(e) = self.frame.send(disconnect_packet).await {
-            println!("{:?}", e);
-        }
+        let disconnect_pkg = Packet::Disconnect(Disconnect);
+        self.frame
+            .send(disconnect_pkg)
+            .map_err(|_| MqttError::ConnectError)
+            .await?;
         Ok(())
     }
 
     pub async fn ping(&mut self) -> Result<(), MqttError> {
         let ping_packet = Packet::Pingreq(Pingreq);
-        if let Err(e) = self.frame.send(ping_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(ping_packet)
+            .map_err(|_| MqttError::PingError)
+            .await?;
         Ok(())
     }
 
@@ -94,9 +105,10 @@ impl Client {
             packet_id,
             payload: payload.to_string(),
         });
-        if let Err(e) = self.frame.send(publish_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(publish_packet)
+            .map_err(|_| MqttError::PublishError)
+            .await?;
         Ok(())
     }
 
@@ -112,9 +124,10 @@ impl Client {
             topic: topic.to_string(),
             qos,
         });
-        if let Err(e) = self.frame.send(subscribe_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(subscribe_packet)
+            .map_err(|_| MqttError::SubscribeError)
+            .await?;
 
         Ok(())
     }
@@ -124,9 +137,10 @@ impl Client {
             packet_id: self.next_packet_id(),
             topic,
         });
-        if let Err(e) = self.frame.send(unsubscribe_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(unsubscribe_packet)
+            .map_err(|_| MqttError::UnsubscribeError)
+            .await?;
 
         Ok(())
     }
@@ -135,9 +149,10 @@ impl Client {
         let pubrel_packet = Packet::Pubrel(Pubrel {
             packet_id: pubrec.packet_id,
         });
-        if let Err(e) = self.frame.send(pubrel_packet).await {
-            println!("{:?}", e);
-        }
+        self.frame
+            .send(pubrel_packet)
+            .map_err(|_| MqttError::PubrelError)
+            .await?;
         Ok(())
     }
 

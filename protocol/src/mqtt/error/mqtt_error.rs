@@ -5,4 +5,8 @@ pub enum MqttError {
     InvalidQos,
     InvalidTopic,
     ReadMessageError,
+    PublishError,
+    SubscribeError,
+    UnsubscribeError,
+    PubrelError,
 }

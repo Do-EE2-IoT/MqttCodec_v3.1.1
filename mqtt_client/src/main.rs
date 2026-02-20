@@ -48,7 +48,7 @@ async fn main() {
     tokio::spawn(console_input_handle(tx));
     tokio::spawn(suback_timeout_handle(rx_suback));
 
-    let mut client = Client::config("127.0.0.1", 1885, "Nguyen Van Do", 60).await;
+    let mut client = Client::new("127.0.0.1", 1885, "Nguyen Van Do", 60).await;
     client
         .connect()
         .await
@@ -125,7 +125,7 @@ async fn main() {
                             println!("Client can't send subscribe to broker");
                             println!("{:?}", e);
                         }
-                        let suback_req = Suback { packet_id: client.current_packet_id - 1, qos };
+                        let suback_req = Suback { packet_id: client.get_current_packet_id() - 1, qos };
                         tx_suback.send(suback_req).await.expect("Channel send must success");
                     },
                     InputUser::Disconnect => {

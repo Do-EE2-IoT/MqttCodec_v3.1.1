@@ -181,9 +181,121 @@ async fn suback_timeout_handle(mut rx: Receiver<Suback>) {
             Ok(Some(suback_response)) => {
                 if suback_response == suback_req { ... }
 ```
-**Vấn đề:** Đang dùng cùng 1 channel `rx` vừa để gửi "SUBACK mong đợi" vừa để nhận SUBACK thật từ broker. Điều này tạo ra race condition, logic khó theo dõi và dễ nhầm lẫn.
+**Vấn đề:** Đang dùng cùng 1 channel `rx` vừa để gửi "SUBACK mong đợi" vừa để nhận SUBACK thật từ broker. Hai loại message hoàn toàn khác nhau về ngữ nghĩa nhưng đi chung 1 channel → race condition và logic rất khó hiểu.
 
-**Đề xuất:** Dùng pattern `pending_acks: HashMap<u16, oneshot::Sender<Suback>>` trong struct Client — khi gửi Subscribe thì đăng ký channel chờ, khi nhận Suback thì resolve channel đó.
+---
+
+**Hướng dẫn sửa từng bước với `pending_acks` + `oneshot`:**
+
+#### Bước 1 — Thêm `pending_acks` vào struct `Client`
+
+```rust
+// protocol/src/mqtt/client.rs
+use std::collections::HashMap;
+use tokio::sync::oneshot;
+use crate::mqtt::packet::suback::Suback;
+
+pub struct Client {
+    frame: Framed<TcpStream, MqttCodec>,
+    client_id: String,
+    keep_alive: u16,
+    current_packet_id: u16,  // đổi thành private (bỏ pub)
+
+    // KEY CHANGE: map từ packet_id → "cái loa" để báo SUBACK về
+    pending_acks: HashMap<u16, oneshot::Sender<Suback>>,
+}
+```
+
+`oneshot::Sender<Suback>` là một "cái loa" dùng 1 lần: ai giữ nó thì gọi `.send(suback)` để báo kết quả về cho người đang chờ bên kia (`oneshot::Receiver<Suback>`).
+
+---
+
+#### Bước 2 — `subscribe()` tạo oneshot pair, đăng ký vào map, trả Receiver về caller
+
+```rust
+// protocol/src/mqtt/client.rs
+pub async fn subscribe(
+    &mut self,
+    topic: &str,
+    qos: u8,
+) -> Result<oneshot::Receiver<Suback>, MqttError> {
+    if topic.is_empty() { return Err(MqttError::InvalidTopic); }
+    if qos > 2 { return Err(MqttError::InvalidQos); }
+
+    let packet_id = self.next_packet_id();
+
+    // Tạo cặp (tx, rx): tx lưu lại trong Client, rx trả về cho caller
+    let (tx, rx) = oneshot::channel::<Suback>();
+    self.pending_acks.insert(packet_id, tx);  // đăng ký chờ
+
+    let packet = Packet::Subscribe(Subscribe { packet_id, topic: topic.to_string(), qos });
+    self.frame.send(packet).await.map_err(|_| MqttError::ConnectError)?;
+
+    Ok(rx)  // caller giữ rx để await kết quả
+}
+```
+
+---
+
+#### Bước 3 — Khi nhận được `Suback` từ broker, resolve pending ack
+
+```rust
+// protocol/src/mqtt/client.rs  (hoặc trong hàm handle_incoming ở tầng app)
+pub fn resolve_suback(&mut self, suback: Suback) {
+    if let Some(tx) = self.pending_acks.remove(&suback.packet_id) {
+        // Báo kết quả về cho caller đang await bên kia
+        let _ = tx.send(suback);
+        // Nếu caller đã timeout và drop rx thì send() trả Err — bỏ qua là đúng
+    } else {
+        println!("Received unexpected SUBACK for packet_id={}", suback.packet_id);
+    }
+}
+```
+
+---
+
+#### Bước 4 — Caller (trong `main.rs`) dùng `timeout` trực tiếp trên `rx`
+
+```rust
+// mqtt_client/src/main.rs
+use tokio::time::{timeout, Duration};
+
+// Khi user gõ lệnh "sub /hello 1"
+InputUser::Subscribe { topic, qos } => {
+    match client.subscribe(&topic, qos).await {
+        Ok(rx) => {
+            // Spawn task chờ SUBACK, hoặc await inline — tùy thiết kế
+            tokio::spawn(async move {
+                match timeout(Duration::from_secs(5), rx).await {
+                    Ok(Ok(suback)) => println!("✓ Subscribed, packet_id={}", suback.packet_id),
+                    Ok(Err(_))    => println!("Client dropped sender before SUBACK"),
+                    Err(_)        => println!("✗ SUBACK timeout — broker không phản hồi"),
+                }
+            });
+        }
+        Err(e) => println!("Subscribe failed: {:?}", e),
+    }
+}
+
+// Trong nhánh xử lý packet nhận từ broker:
+Packet::Suback(suback) => {
+    client.resolve_suback(suback);  // không cần channel ngoài nữa
+}
+```
+
+---
+
+**So sánh trước và sau:**
+
+| | Trước (channel trick) | Sau (pending_acks + oneshot) |
+|---|---|---|
+| Số channel | 1 channel dùng 2 mục đích | Mỗi Subscribe có 1 oneshot riêng |
+| Race condition | ✗ Có thể xảy ra | ✓ Không thể — packet_id làm key |
+| Nhiều Subscribe đồng thời | ✗ Logic sai | ✓ Hỗ trợ tự nhiên |
+| Timeout | Phức tạp, dễ nhầm | `tokio::time::timeout(rx)` thẳng |
+| Tách biệt trách nhiệm | ✗ task riêng cho 1 loại packet | ✓ Logic nằm gọn trong Client |
+
+> **Lưu ý khi code:** Pattern `pending_acks` này cũng áp dụng được cho `PUBACK` (QoS 1) và `PUBCOMP` (QoS 2) — cùng dùng `packet_id` làm key, chỉ khác kiểu Sender.
 
 ---
 
