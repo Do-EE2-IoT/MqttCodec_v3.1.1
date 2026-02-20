@@ -1,5 +1,7 @@
 # MqttCodec v3.1.1
 
+**Author:** Nguyễn Văn Độ — Automation Engineering, Hanoi University of Science and Technology (HUST)
+
 A Rust workspace implementing the MQTT protocol v3.1.1 from scratch, including:
 
 - **`protocol`** — core library: encode/decode all packet types, Framed codec
