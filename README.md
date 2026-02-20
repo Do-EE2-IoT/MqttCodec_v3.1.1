@@ -147,6 +147,58 @@ MqttCodec_v3.1.1/
 
 ---
 
+## Kiến Trúc Tổng Quan (Client)
+
+```mermaid
+flowchart TD
+    subgraph INPUT ["INPUT LAYER"]
+        CON["fa:fa-keyboard Console\nstdin (blocking)"] 
+        CI["ConsoleInput::pop().await\n(spawn task)"] 
+        PARSE["InputUser::from_str(line)\npub / sub / unsub / ping / disconnect"]
+    end
+
+    subgraph CHANNEL ["CHANNEL (mpsc)"]
+        TX["tx: mpsc::Sender\u003cInputUser\u003e"]
+        RX["rx: mpsc::Receiver\u003cInputUser\u003e"]
+    end
+
+    subgraph EVENTLOOP ["EVENT LOOP (tokio::select!)"]
+        SEL{"tokio::select!"}
+        B1["Branch 1\nKeep-Alive tick (60s)"]
+        B2["Branch 2\nBroker message"]
+        B3["Branch 3\nUser command"]
+    end
+
+    subgraph CLIENT ["struct Client"]
+        FRAME["Framed\u003cTcpStream, MqttCodec\u003e"]
+        MAP["pending_ack\nHashMap\u003cu16, oneshot::Sender\u003cPacket\u003e\u003e"]
+        ID["current_packet_id: u16"]
+    end
+
+    subgraph PROTOCOL ["PROTOCOL CRATE"]
+        ENC["Encode\nPacket \u2192 BytesMut"]
+        DEC["Decode\nBytesMut \u2192 Packet"]
+        CODEC["MqttCodec\n(impl Encoder + Decoder)"]
+    end
+
+    subgraph BROKER ["MQTT BROKER (external)"]
+        BRK["127.0.0.1:1885\nMosquitto / mqtt_broker"]
+    end
+
+    CON --> CI --> PARSE --> TX --> RX
+    RX --> SEL
+    SEL --> B1 & B2 & B3
+    B1 -- ping --> FRAME
+    B2 -- wait_message --> FRAME
+    B3 -- publish/subscribe/... --> FRAME
+    B3 -- subscribe --> MAP
+    FRAME <--> CODEC
+    CODEC --> ENC & DEC
+    FRAME <-->|TCP bytes| BRK
+```
+
+---
+
 ## MQTT Packet Format (v3.1.1)
 
 Mỗi packet MQTT có cấu trúc:
@@ -194,204 +246,175 @@ Remaining Length: Variable Length Encoding (VLE)
 
 ## Protocol Crate — Luồng Encode/Decode
 
-### Encode (Client → TCP)
+```mermaid
+flowchart LR
+    subgraph APP ["Application"]
+        PUB["client.publish()\nclient.subscribe()"]
+        MSG["client.wait_message()"]
+    end
 
-```
-Client::publish(topic, qos, payload)
-        │
-        ▼
-Packet::Publish(Publish { ... })
-        │
-        ▼
-MqttCodec::encode(item, dst: &mut BytesMut)
-        │  match item { Packet::Publish(p) => p.encode(dst) }
-        ▼
-Publish::encode(&self, buffer)
-   1. put_u8(0x30 | flags)          ← Fixed Header
-   2. put_u8(remaining_length)      ← TODO: dùng VLE thay 1 byte
-   3. put_u16(topic.len())          ← UTF-8 prefix length
-   4. put_slice(topic.as_bytes())   ← Topic string
-   5. put_u16(packet_id)            ← Chỉ nếu QoS > 0
-   6. put_slice(payload.as_bytes()) ← Payload
-        │
-        ▼
-Framed<TcpStream, MqttCodec> → gửi bytes lên TCP
+    subgraph CODEC ["MqttCodec (Framed)"]
+        direction TB
+        ENC["Encoder\nPacket → BytesMut\nput_u8 / put_u16 / put_slice"]
+        DEC["Decoder\nBytesMut → Packet\ntry_from header byte\n→ dispatch decode()"]
+    end
+
+    subgraph TCP ["TcpStream"]
+        WIRE["Raw bytes\non the wire"]
+    end
+
+    PUB -- "Packet::Publish(...)" --> ENC
+    ENC -- "frame.send()" --> WIRE
+    WIRE -- "frame.next().await" --> DEC
+    DEC -- "Ok(Some(Packet))" --> MSG
 ```
 
-### Decode (TCP → Client)
+**Encode steps** (ví dụ: PUBLISH):
+1. `put_u8(0x30 | flags)` ← Fixed Header
+2. `put_u8(remaining_length)` ← *TODO: dùng VLE đa byte*
+3. `put_u16(topic.len())` + `put_slice(topic)` ← UTF-8 string
+4. `put_u16(packet_id)` ← chỉ nếu QoS > 0
+5. `put_slice(payload)` ← Payload
 
-```
-Framed<TcpStream, MqttCodec>::next().await
-        │  nhận bytes từ TCP stream
-        ▼
-MqttCodec::decode(&mut self, src: &mut BytesMut)
-   1. Đọc src[0] → ControlPackets::try_from(byte)
-   2. match header { ... }
-        │
-        ▼
-Packet::Xyz::decode(src)    ← ví dụ Connack::decode(src)
-   1. get_u8() → skip fixed header
-   2. get_u8() → remaining_length
-   3. get_u8() → session_present
-   4. get_u8() → return_code
-   5. Ok(Packet::Connack(Self { return_code }))
-        │
-        ▼
-Trả về Ok(Some(Packet)) về cho client.wait_message()
-```
+**Decode steps** (ví dụ: CONNACK):
+1. `get_u8()` → `ControlPackets::try_from(byte)` ← xác định loại packet
+2. `get_u8()` → remaining length
+3. `get_u8()` → session_present flag
+4. `get_u8()` → return_code
+5. `Ok(Packet::Connack(Self { return_code }))`
 
 ---
 
 ## Client Flow — Chi Tiết
 
-### Khởi Tạo
+### Khởi Tạo & Channels
 
-```
-main()
-  │
-  ├─ mpsc::channel::<InputUser>(1)   ← channel từ console → event loop
-  │
-  ├─ tokio::spawn(console_input_handle(tx))
-  │    │  ConsoleInput::pop().await   ← đọc stdin không block
-  │    │  InputUser::from_str(line)   ← parse "pub /topic 1 hello"
-  │    └─ tx.send(InputUser).await
-  │
-  ├─ Client::new(host, port, client_id, keep_alive).await
-  │    └─ TcpStream::connect(addr).await
-  │       Framed::new(stream, MqttCodec)
-  │       pending_ack: HashMap::new()
-  │
-  └─ client.connect().await
-       └─ frame.send(Packet::Connect { keep_alive, client_id }).await
-```
+```mermaid
+sequenceDiagram
+    participant main
+    participant ConsoleTask as "tokio::spawn\nConsoleInput task"
+    participant mpsc as "mpsc channel\n(InputUser)"
+    participant Client
+    participant Broker
 
-### Event Loop Chính (`tokio::select!`)
+    main->>ConsoleTask: spawn(console_input_handle(tx))
+    main->>Client: Client::new(host, port, id, keep_alive)
+    Client->>Broker: TcpStream::connect()
+    main->>Client: client.connect()
+    Client->>Broker: CONNECT packet
+    Broker-->>Client: CONNACK packet
+    Note over Client: Connection accepted!
 
-```
-loop {
-  tokio::select! {
-    ┌─────────────────────────────────────────────────────────┐
-    │ NHÁNH 1: Keep-Alive Timer (60s interval)                │
-    │   interval.tick()                                       │
-    │      └─ client.ping()                                   │
-    │           └─ frame.send(Packet::Pingreq)                │
-    └─────────────────────────────────────────────────────────┘
-
-    ┌─────────────────────────────────────────────────────────┐
-    │ NHÁNH 2: Tin nhắn từ Broker                             │
-    │   client.wait_message()                                 │
-    │      └─ frame.next().await → Result<Packet, MqttError>  │
-    │                                                         │
-    │   match packet {                                        │
-    │     Connack  → handle_return_code()                     │
-    │     Pingres  → log                                      │
-    │     Publish  → log topic + payload                      │
-    │     Suback   → resolve_ack(packet_id, Packet::Suback)   │
-    │     Puback   → resolve_ack(packet_id, Packet::Puback)   │
-    │     Pubrec   → send_pubrel(pubrec)  [QoS 2 auto]        │
-    │     Pubcomp  → resolve_ack(packet_id, Packet::Pubcomp)  │
-    │     Unsuback → log                                      │
-    │     _        → log "not for client"                     │
-    │   }                                                     │
-    └─────────────────────────────────────────────────────────┘
-
-    ┌─────────────────────────────────────────────────────────┐
-    │ NHÁNH 3: Lệnh từ User (Console)                         │
-    │   rx.recv()                                             │
-    │                                                         │
-    │   match InputUser {                                     │
-    │     Publish { topic, qos, message }                     │
-    │       └─ client.publish(topic, qos, message, retain=0)  │
-    │                                                         │
-    │     Subscribe { topic, qos }                            │
-    │       └─ client.subscribe(topic, qos) → Ok(rx_ack)      │
-    │            │  pending_ack.insert(packet_id, tx)         │
-    │            └─ tokio::spawn(                             │
-    │                 timeout(5s, rx_ack).await {             │
-    │                   Ok(Ok(Packet::Suback(s))) → log ok    │
-    │                   Err(_)                   → timeout    │
-    │                 }                                       │
-    │               )                                         │
-    │                                                         │
-    │     Unsubscribe { topic }                               │
-    │       └─ client.unsubscribe(topic)                      │
-    │                                                         │
-    │     Disconnect                                          │
-    │       └─ client.disconnect()                            │
-    │            └─ frame.send(Packet::Disconnect)            │
-    │                                                         │
-    │     Ping                                                │
-    │       └─ client.ping()                                  │
-    └─────────────────────────────────────────────────────────┘
-  }
-}
+    loop Event Loop (tokio::select!)
+        ConsoleTask->>mpsc: tx.send(InputUser)
+        mpsc->>main: rx.recv() [Branch 3]
+        Broker-->>Client: Packet [Branch 2]
+        Note over main: interval.tick() [Branch 1]
+    end
 ```
 
-### pending_ack — Cơ Chế ACK Tổng Quát
+### Event Loop — 3 Nhánh `tokio::select!`
 
+```mermaid
+flowchart TD
+    SEL["tokio::select!"] --> B1 & B2 & B3
+
+    subgraph B1 ["Branch 1 — Keep-Alive Timer"]
+        T1["interval.tick() every 60s"] --> PING["client.ping()"]
+        PING --> PINGREQ["frame.send(Packet::Pingreq)"]
+    end
+
+    subgraph B2 ["Branch 2 — Broker Message"]
+        T2["client.wait_message()\nframe.next().await"] --> MATCH
+        MATCH{"match Packet"}
+        MATCH -->|Connack| CA["handle_return_code()"]
+        MATCH -->|Pingres| PR["log"]
+        MATCH -->|Publish| PB["log topic + payload"]
+        MATCH -->|Suback| RA1["resolve_ack(id, Packet::Suback)"]
+        MATCH -->|Puback| RA2["resolve_ack(id, Packet::Puback)"]
+        MATCH -->|Pubrec| PUBREL["client.send_pubrel()\n(QoS 2 auto-step)"]
+        MATCH -->|Pubcomp| RA3["resolve_ack(id, Packet::Pubcomp)"]
+        MATCH -->|Unsuback| UN["log"]
+    end
+
+    subgraph B3 ["Branch 3 — User Command"]
+        T3["rx.recv()"] --> UCMD
+        UCMD{"match InputUser"}
+        UCMD -->|Publish| UP["client.publish()"]
+        UCMD -->|Subscribe| US["client.subscribe()\n→ rx_ack"]
+        US --> SP["tokio::spawn\ntimeout(5s, rx_ack)"]
+        UCMD -->|Unsubscribe| UU["client.unsubscribe()"]
+        UCMD -->|Ping| UPI["client.ping()"]
+        UCMD -->|Disconnect| UD["client.disconnect()"]
+    end
 ```
-Client {
-    pending_ack: HashMap<u16, oneshot::Sender<Packet>>
-    //           ─────────   ──────────────────────────
-    //           packet_id   "cái loa" gửi ACK về caller
-}
 
-subscribe(topic, qos):
-   packet_id = next_packet_id()          ← lưu ra biến trước
-   (tx, rx) = oneshot::channel::<Packet>()
-   pending_ack.insert(packet_id, tx)     ← đăng ký chờ
-   frame.send(Subscribe { packet_id })   ← gửi lên broker
-   return Ok(rx)                         ← caller giữ rx để await
+### pending\_ack — Cơ Chế ACK Tổng Quát
 
-Khi broker gửi Suback { packet_id=5 }:
-   resolve_ack(5, Packet::Suback(suback))
-      pending_ack.remove(&5) → Some(tx)
-      tx.send(Packet::Suback(suback))    ← đánh thức caller
+```mermaid
+sequenceDiagram
+    participant Caller as "main.rs\n(Subscribe handler)"
+    participant Client as "Client\npending_ack: HashMap"
+    participant oneshot as "oneshot channel\n(tx / rx)"
+    participant Broker
 
-Caller:
-   match timeout(5s, rx_ack).await {
-     Ok(Ok(Packet::Suback(s))) → đã subscribe thành công
-     Err(_)                   → broker không phản hồi
-   }
+    Caller->>Client: client.subscribe(topic, qos)
+    Note over Client: packet_id = next_packet_id()\n(tx, rx) = oneshot::channel()
+    Client->>Client: pending_ack.insert(packet_id, tx)
+    Client->>Broker: SUBSCRIBE { packet_id }
+    Client-->>Caller: Ok(rx)  [Receiver]
+
+    Caller->>Caller: tokio::spawn(timeout(5s, rx))
+
+    Broker-->>Client: SUBACK { packet_id }
+    Note over Client: resolve_ack(packet_id, Packet::Suback)
+    Client->>Client: pending_ack.remove(packet_id) → tx
+    Client->>oneshot: tx.send(Packet::Suback)
+    oneshot-->>Caller: rx yields Ok(Packet::Suback)
+    Note over Caller: ✓ Subscribed OK, packet_id=N
+
+    rect rgb(200,50,50)
+        Note over Caller: Nếu broker không gửi SAuback trong 5s:
+        Caller->>Caller: Err(timeout) → log “✗ SUBACK timeout”
+        Note over Client: rx dropped → tx.send() trả Err (bỏ qua)
+    end
 ```
 
-Cùng pattern áp dụng cho:
-- `Puback` — ACK của PUBLISH QoS 1
-- `Pubcomp` — ACK cuối của PUBLISH QoS 2
+> Cùng pattern cho `Puback` (QoS 1) và `Pubcomp` (QoS 2). `Pubrec` không dùng `pending_ack` vì chưa phải ACK cuối.
 
 ---
 
 ## QoS Flows
 
-### QoS 0 — At Most Once
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant B as Broker
 
-```
-Client                       Broker
-  │──── PUBLISH (QoS=0) ──────►│
-  │                             │  (không có ACK)
+    rect rgb(20, 80, 40)
+        Note over C,B: QoS 0 — At Most Once (fire and forget)
+        C->>B: PUBLISH (QoS=0, no packet_id)
+    end
+
+    rect rgb(20, 40, 120)
+        Note over C,B: QoS 1 — At Least Once
+        C->>B: PUBLISH (QoS=1, id=N)
+        B-->>C: PUBACK (id=N)
+        Note over C: resolve_ack(N, Packet::Puback)
+    end
+
+    rect rgb(80, 20, 80)
+        Note over C,B: QoS 2 — Exactly Once (4-way handshake)
+        C->>B: PUBLISH (QoS=2, id=N)
+        B-->>C: PUBREC (id=N)
+        Note over C: Auto: client.send_pubrel(pubrec)
+        C->>B: PUBREL (id=N)
+        B-->>C: PUBCOMP (id=N)
+        Note over C: resolve_ack(N, Packet::Pubcomp)
+    end
 ```
 
-### QoS 1 — At Least Once
-
-```
-Client                       Broker
-  │──── PUBLISH (QoS=1, id=N) ►│
-  │◄─── PUBACK  (id=N) ─────────│
-  │  resolve_ack(N, Puback)     │
-```
-
-### QoS 2 — Exactly Once (4-way handshake)
-
-```
-Client                       Broker
-  │──── PUBLISH (QoS=2, id=N) ►│
-  │◄─── PUBREC  (id=N) ─────────│  (tự động)
-  │──── PUBREL  (id=N) ─────────►│  client.send_pubrel(pubrec)
-  │◄─── PUBCOMP (id=N) ──────────│
-  │  resolve_ack(N, Pubcomp)     │
-```
-
-> `PUBREC` không đi qua `pending_ack` vì không phải ACK cuối — client phải gửi `PUBREL` ngay.
+> `PUBREC` không đi qua `pending_ack` vì không phải ACK cuối — client phải gửi `PUBREL` ngay theo protocol.
 
 ---
 
